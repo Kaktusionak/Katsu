@@ -1,0 +1,128 @@
+import discord
+from discord.ext import commands
+import asyncio
+import config
+from datetime import datetime, timedelta
+
+bot = commands.Bot(command_prefix="t!", intents=discord.Intents.all())
+
+# setconfig
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setconfig(ctx, key: str = None, value: str = None):
+    global log_channel
+    global forbidden_words
+    global mute_role_id
+    
+    if key is None or value is None:
+        embed = discord.Embed(title="Ошибка", description="Необходимо указать ключ и значение.", color=discord.Color.red())
+        embed.add_field(name="Пример использования (logs):", value="t!setconfig <log_channel> <id>")
+        embed.add_field(name="Пример использования (forbidden.words):", value="t!setconfig <forbidden_words> слово1,слово2,слово3")
+        embed.add_field(name="Пример использования (mute_role_id):", value="t!setconfig <mute_role_id> <role_id>")
+        await ctx.send(embed=embed)
+        return
+
+    if key == 'log_channel':
+        log_channel = int(value)
+        await ctx.send(f'Канал логирования установлен на {value}')
+    elif key == 'forbidden_words':
+        forbidden_words = value.split(',')
+        await ctx.send(f'Список запрещённых слов изменён: {", ".join(forbidden_words)}')
+    elif key == 'mute_role_id':
+        mute_role_id = int(value)
+        await ctx.send(f'ID роли мута установлен на {value}')
+    else:
+        embed = discord.Embed(title="Ошибка", description="Неверный ключ.", color=discord.Color.red())
+        embed.add_field(name="Пример использования (logs):", value="t!setconfig <log_channel> <id>")
+        embed.add_field(name="Пример использования (forbidden.words):", value="t!setconfig <forbidden_words> слово1,слово2,слово3")
+        embed.add_field(name="Пример использования (mute_role_id):", value="t!setconfig <mute_role_id> <role_id>")
+        await ctx.send(embed=embed)
+
+# ban
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def ban(ctx, member: discord.Member = None):
+    if member is None:
+        return await ctx.send("[ОШИБКА!] Укажите пользователя")
+    await member.ban()
+    await log_action('Бан', ctx.author, member)
+    message = await ctx.send(f"Пользователь {member} успешно забанен!")
+    await message.add_reaction("✔️")
+
+# kick
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def kick(ctx, member: discord.Member = None):
+    if member is None:
+        return await ctx.send("[ОШИБКА!] Укажите пользователя")
+    await member.kick()
+    await log_action('Кик', ctx.author, member)
+    message = await ctx.send(f"Пользователь {member} успешно кикнут!")
+    await message.add_reaction("✔️")
+
+# mute
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def mute(ctx, member: discord.Member = None, duration: int = 0, *, reason: str = None):
+    global mute_role_id
+    
+    if member is None:
+        return await ctx.send("[ОШИБКА!] Укажите пользователя")
+    
+    if mute_role_id is None:
+        return await ctx.send("ID роли мута не установлен. Используйте команду t!setconfig mute_role_id <role_id> для установки.")
+    
+    mute_role = ctx.guild.get_role(mute_role_id)
+    if not mute_role:
+        return await ctx.send("Роль мута не найдена на сервере. Убедитесь, что вы указали правильный ID роли.")
+    
+    await member.add_roles(mute_role)
+    
+    # Записываем информацию о муте в словарь
+    if duration > 0:
+        unmute_time = datetime.utcnow() + timedelta(minutes=duration)
+        muted_users[member.id] = {"unmute_time": unmute_time, "reason": reason}
+    
+    message = f"Пользователь {member} успешно замучен!"
+    if reason:
+        message += f"\nПричина: {reason}"
+    if duration > 0:
+        message += f"\nМут на {duration} минут"
+    
+    await ctx.send(message)
+    await ctx.message.delete()
+    
+    # Запускаем таймер для автоматического снятия мута
+    if duration > 0:
+        bot.loop.create_task(auto_unmute(member, unmute_time))
+
+async def auto_unmute(member, unmute_time):
+    await asyncio.sleep((unmute_time - datetime.utcnow()).total_seconds())
+    await member.remove_roles(mute_role)
+    if member.id in muted_users:
+        del muted_users[member.id]
+    print(f"Пользователь {member} был успешно размучен.")
+
+
+# запретки
+@bot.event
+async def on_message(message):
+    # Проверка, отправлено ли сообщение в канал и не является ли оно сообщением бота
+    if message.guild is not None and message.author != bot.user:
+        # Проверка запреток
+        for word in forbidden_words:
+            if word in message.content.lower():
+                # Удаление сообщения
+                await message.delete()
+                # Оповещение об удалении сообщения
+                await message.channel.send(f"{message.author.mention}, в вашем сообщении содержится запрещенное слово, настоятельно рекомендуем ознакомиться с правилами сервера и впредь не нарушать!")
+                break  # Выход из цикла после удаления сообщения
+    await bot.process_commands(message)  # Обработка команд
+
+@bot.command()
+async def list_channels(ctx):
+    for channel in ctx.guild.channels:
+        print(channel.name, channel.id)
+
+# RUN
+bot.run(config.TOKEN)
